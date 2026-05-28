@@ -344,7 +344,4 @@ SELECT * FROM products;
 
 ---
 
-## Credits
-
-Based on [TechWorld with Nana — Kafka Crash Course](https://www.youtube.com/watch?v=B7CwU_tNYIE), extended into a full-stack event-driven e-commerce application.
 
