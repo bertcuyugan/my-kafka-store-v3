@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Order {{ order.order_number }} — Kafka Store{% endblock %}
+
+{% block content %}
+<div class="order-detail">
+    <h1>Order {{ order.order_number }}</h1>
+
+    <div class="order-info-grid">
+        <div class="info-card">
+            <h3>Product</h3>
+            <p>{{ order.product.name }}</p>
+            <p>Quantity: {{ order.quantity }}</p>
+            <p class="order-price">${{ "%.2f"|format(order.total_price) }}</p>
+        </div>
+        <div class="info-card">
+            <h3>Status</h3>
+            <p class="order-status status-{{ order.status }} large">{{ order.status }}</p>
+            <p class="order-date">Placed: {{ order.created_at.strftime('%B %d, %Y at %I:%M %p') }}</p>
+        </div>
+    </div>
+
+    <h2>Order Timeline</h2>
+    <div class="order-timeline vertical">
+        <div class="timeline-step {% if order.status in ['paid', 'shipped', 'delivered'] %}completed{% endif %}">
+            <span class="step-icon">📦</span>
+            <div class="step-content">
+                <strong>Order Placed</strong>
+                <p>{{ order.created_at.strftime('%B %d, %Y at %I:%M %p') }}</p>
+            </div>
+        </div>
+        <div class="timeline-step {% if order.status in ['paid', 'shipped', 'delivered'] %}completed{% endif %}">
+            <span class="step-icon">💳</span>
+            <div class="step-content">
+                <strong>Payment Confirmed</strong>
+                {% if order.payment %}
+                    <p>Amount: ${{ "%.2f"|format(order.payment[0].amount) }}</p>
+                {% endif %}
+            </div>
+        </div>
+        <div class="timeline-step {% if order.status in ['shipped', 'delivered'] %}completed{% endif %}">
+            <span class="step-icon">🚚</span>
+            <div class="step-content">
+                <strong>Shipped</strong>
+                {% if order.shipment %}
+                    <p>Tracking: {{ order.shipment[0].tracking_number }}</p>
+                {% else %}
+                    <p>Waiting to ship...</p>
+                {% endif %}
+            </div>
+        </div>
+        <div class="timeline-step {% if order.status == 'delivered' %}completed{% endif %}">
+            <span class="step-icon">✅</span>
+            <div class="step-content">
+                <strong>Delivered</strong>
+                {% if order.status == 'delivered' and order.shipment %}
+                    <p>{{ order.shipment[0].delivered_at.strftime('%B %d, %Y at %I:%M %p') }}</p>
+                {% else %}
+                    <p>Not yet delivered</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <a href="{{ url_for('my_orders') }}" class="btn btn-secondary">← Back to My Orders</a>
+</div>
+{% endblock %}
