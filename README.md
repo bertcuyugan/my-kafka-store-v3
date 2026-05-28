@@ -1,8 +1,8 @@
 # 🏪 My Kafka Store V3 — Event-Driven E-Commerce
 
-A full-stack e-commerce application where every step of the buying process flows through Apache Kafka automatically — from order placement to delivery confirmation.
+A full-stack e-commerce application where every step of the buying process flows through Apache Kafka automatically — from order placement to delivery confirmation — with a data lake pipeline feeding a Databricks medallion model.
 
-Built with Flask, Kafka, PostgreSQL, Stripe, and Gmail.
+Built with Flask, Kafka, PostgreSQL, Stripe, Gmail, and Databricks.
 
 ---
 
@@ -34,9 +34,11 @@ Customer clicks "Buy Now"
                                                           "item-delivered" ──► Delivery Service
                                                                                (emails delivery confirmation)
                                                                                (marks order as "delivered" in DB)
+
+   ALL 4 TOPICS ──► Lake Writer Service ──► Parquet files ──► Databricks (Bronze → Silver → Gold)
 ```
 
-The customer receives 4 real emails throughout the process and can track their order status in the web app.
+The customer receives 4 real emails and can track their order status in the web app. Meanwhile, every event is captured as Parquet files for analytics in Databricks.
 
 ---
 
@@ -46,10 +48,12 @@ The customer receives 4 real emails throughout the process and can track their o
 - **Product catalog** with images, prices, and stock tracking
 - **Stripe checkout** (test mode — no real money)
 - **4 Kafka topics** driving an automated event pipeline
-- **6 independent microservices** each doing one job
+- **7 independent microservices** each doing one job
 - **Real Gmail emails** at every stage (confirmation, invoice, tracking, delivery)
 - **Order history page** with a visual status timeline (pending → paid → shipped → delivered)
 - **PostgreSQL database** storing users, products, orders, payments, and shipments
+- **Data lake pipeline** writing all Kafka events to Parquet files
+- **Databricks medallion model** (Bronze → Silver → Gold) for analytics
 
 ---
 
@@ -63,6 +67,8 @@ The customer receives 4 real emails throughout the process and can track their o
 | Message Broker | Apache Kafka 3.9.2 (Docker, KRaft mode) |
 | Payments | Stripe (test mode) |
 | Emails | Gmail SMTP |
+| Data Lake | Parquet files via fastparquet + pandas |
+| Analytics | Databricks (PySpark, medallion architecture) |
 | Containers | Docker Compose |
 
 ---
@@ -89,7 +95,14 @@ my-kafka-store-v3/
 │   ├── invoice_service.py      # Emails invoice (payment-received)
 │   ├── shipping_service.py     # Ships item + publishes item-shipped
 │   ├── tracking_service.py     # Emails tracking + publishes item-delivered
-│   └── delivery_service.py     # Marks delivered + emails confirmation
+│   ├── delivery_service.py     # Marks delivered + emails confirmation
+│   └── lake_writer.py          # Writes all Kafka events to Parquet files
+│
+├── data-lake/                  # Generated Parquet files (gitignored)
+│   ├── order-placed/
+│   ├── payment-received/
+│   ├── item-shipped/
+│   └── item-delivered/
 │
 ├── templates/                  # HTML pages
 │   ├── base.html
@@ -113,6 +126,7 @@ my-kafka-store-v3/
 - **Docker Desktop** — [Download](https://www.docker.com/products/docker-desktop/)
 - **Stripe account** (free) — [Sign up](https://dashboard.stripe.com/register)
 - **Gmail App Password** — [Generate one](https://myaccount.google.com/apppasswords) (requires 2-Step Verification)
+- **Databricks Community Edition** (free, for the medallion model) — [Sign up](https://community.cloud.databricks.com/login.html)
 
 ---
 
@@ -194,9 +208,9 @@ python seed_products.py
 
 ## Running the App
 
-You need **7 terminal windows**. In each one, `cd` to the project folder and activate `.venv`.
+You need **8 terminal windows**. In each one, `cd` to the project folder and activate `.venv`.
 
-### Start the 6 microservices (one per terminal):
+### Start the 7 microservices (one per terminal):
 
 ```bash
 # Terminal 1
@@ -216,12 +230,15 @@ python services/tracking_service.py
 
 # Terminal 6
 python services/delivery_service.py
+
+# Terminal 7 — Data Lake Writer
+python services/lake_writer.py
 ```
 
 ### Start the Flask web app:
 
 ```bash
-# Terminal 7
+# Terminal 8
 python app.py
 ```
 
@@ -238,9 +255,10 @@ Go to **http://localhost:5000**
 3. **Browse** the product catalog
 4. **Click a product** → click **"Buy Now"**
 5. **Pay with Stripe** using test card: `4242 4242 4242 4242`, any future expiry, any CVC
-6. **Watch the terminals** — events cascade automatically through all 6 services
+6. **Watch the terminals** — events cascade automatically through all 7 services
 7. **Check your email** — you'll receive 4 emails (confirmation, invoice, tracking, delivery)
 8. **View "My Orders"** — see the status timeline update from paid → shipped → delivered
+9. **Check `data-lake/` folder** — Parquet files appear as events flow through Kafka
 
 ### Stripe Test Cards
 
@@ -262,10 +280,13 @@ After a successful purchase, this is what happens automatically:
 | 0s | Stock updated in database | Stock Service |
 | 0s | Confirmation email sent | Email Service |
 | 0s | Invoice emailed | Invoice Service |
+| 0s | Event written to Parquet | Lake Writer |
 | ~30s | Item shipped, tracking created | Shipping Service |
 | ~30s | Tracking email sent | Tracking Service |
+| ~30s | Shipping event written to Parquet | Lake Writer |
 | ~90s | Item marked as delivered | Delivery Service |
 | ~90s | Delivery confirmation email sent | Delivery Service |
+| ~90s | Delivery event written to Parquet | Lake Writer |
 
 ---
 
@@ -273,10 +294,87 @@ After a successful purchase, this is what happens automatically:
 
 | Topic | Published by | Consumed by |
 |---|---|---|
-| `order-placed` | Flask app (on payment success) | Email Service, Stock Service |
-| `payment-received` | Flask app (on payment success) | Invoice Service, Shipping Service |
-| `item-shipped` | Shipping Service | Tracking Service |
-| `item-delivered` | Tracking Service | Delivery Service |
+| `order-placed` | Flask app (on payment success) | Email Service, Stock Service, Lake Writer |
+| `payment-received` | Flask app (on payment success) | Invoice Service, Shipping Service, Lake Writer |
+| `item-shipped` | Shipping Service | Tracking Service, Lake Writer |
+| `item-delivered` | Tracking Service | Delivery Service, Lake Writer |
+
+---
+
+## Data Lake Pipeline
+
+The Lake Writer service listens to all 4 Kafka topics and writes every event as Parquet files:
+
+```
+data-lake/
+├── order-placed/
+│   └── 2026-05-28/
+│       └── batch_143022_123456.parquet
+├── payment-received/
+│   └── 2026-05-28/
+│       └── batch_143022_234567.parquet
+├── item-shipped/
+│   └── 2026-05-28/
+│       └── batch_143052_345678.parquet
+└── item-delivered/
+    └── 2026-05-28/
+        └── batch_143122_456789.parquet
+```
+
+Each Parquet file contains:
+
+| Column | Description |
+|---|---|
+| `event_topic` | Which Kafka topic it came from |
+| `event_key` | Message key (order number) |
+| `event_partition` | Kafka partition number |
+| `event_offset` | Position in partition |
+| `event_timestamp` | When the lake writer ingested it |
+| `event_data` | Full event payload as raw JSON |
+
+### Verify Parquet files locally:
+
+```bash
+python -c "import pandas as pd; print(pd.read_parquet('data-lake/order-placed', engine='fastparquet').to_string())"
+```
+
+---
+
+## Databricks Medallion Model
+
+Upload the `data-lake/` folder to Databricks Community Edition, then build Bronze → Silver → Gold layers:
+
+### Upload to Databricks
+
+1. Go to **Workspace → Users → your email**
+2. Create a folder called `data-lake` with subfolders for each topic
+3. Upload Parquet files into the matching subfolders
+
+### Medallion Architecture
+
+```
+Bronze (Raw)              Silver (Cleaned)           Gold (Business)
+──────────────────        ──────────────────         ──────────────────
+Raw Parquet as-is         Parsed JSON into           Aggregated tables:
+from Kafka events         typed columns,             • Order Journey
+                          deduplicated               • Revenue Summary
+                                                     • Top Products
+"Store everything"        "Clean everything"         • Customer Summary
+                                                     • Delivery Performance
+```
+
+### Read Bronze layer in Databricks:
+
+```python
+base_path = "/Workspace/Users/your.email@gmail.com/data-lake"
+
+bronze_orders = spark.read.parquet(f"{base_path}/order-placed/")
+bronze_payments = spark.read.parquet(f"{base_path}/payment-received/")
+bronze_shipments = spark.read.parquet(f"{base_path}/item-shipped/")
+bronze_deliveries = spark.read.parquet(f"{base_path}/item-delivered/")
+```
+
+See the full Databricks notebook code in the [Data Lake Guide](kafka-datalake-guide.md).
 
 ---
 
@@ -322,6 +420,9 @@ docker exec -it postgres psql -U kafkauser -d kafkastore
 SELECT * FROM orders;
 SELECT * FROM products;
 \q
+
+# Verify Parquet files
+python -c "import pandas as pd; print(pd.read_parquet('data-lake/order-placed', engine='fastparquet').to_string())"
 ```
 
 ---
@@ -341,7 +442,8 @@ SELECT * FROM products;
 | Emails not arriving | Check spam folder; verify Gmail App Password in `.env` |
 | `psycopg2 not found` | Use `postgresql+psycopg://` in DATABASE_URL (not `postgresql://`) |
 | `psycopg2-binary` won't install on Windows | Use `psycopg[binary]` instead (already in requirements.txt) |
+| `pyarrow` won't install (cmake error) | Use `fastparquet` + `pandas` instead (already in requirements.txt) |
+| Parquet files not appearing in `data-lake/` | Make sure `lake_writer.py` is running; wait 30s for the buffer to flush |
+| Databricks can't find Parquet files | Path is `/Workspace/Users/your-email/data-lake/` not `/FileStore/tables/` |
 
 ---
-
-
